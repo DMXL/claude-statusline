@@ -23,6 +23,9 @@ Rendering by hand is not enough. Three things have broken silently in this scrip
 1. **Width drift.** The right half is aligned by padding to `$COLUMNS`, so any cell whose printed width differs from its measured width pushes the line off. Every cell is built twice, once with colour and once plain, and carries its own count of the columns the plain copy does not hold. That count belongs on the cell rather than in one shared accumulator, because the overflow ladder has to know what a given cell gives back when it is shed.
 2. **Glyph accounting.** A Nerd Font glyph and a block character are one column but three bytes, and `${#var}` only agrees with that under a UTF-8 locale. Glyphs stay out of the `*_plain` strings and are counted in `extra_cols` instead. Never put one in a measured string, and never slice one with `${str:0:n}`, which counts bytes.
 3. **Silent failure.** A non-zero exit, a spawn failure or a timeout makes the harness keep the previous text with no error shown anywhere but the debug log. A broken script looks like a frozen one, so the script must never `set -e` and must degrade to rendering something.
+4. **Time dependence.** The phase group has two forms and picks between them from a clock, so a render is no longer a pure function of the payload. Every test therefore runs on a frozen clock (`CLAUDE_STATUSLINE_NOW`) against a per-case state file (`CLAUDE_STATUSLINE_STATE`), and anything new that reads a clock has to be injectable the same way or the suite starts failing one run in ten.
+
+The two-form phase group has its own trap: what it shows depends on what it showed last, so a single render proves nothing about it. The clock lives in a fingerprint of the displayed state plus an epoch, kept in one line in `$TMPDIR` keyed by session id, and the reason it is a fingerprint rather than the plan file's mtime is that an edit to prose below the checklist must not restart the acknowledgement. That property, and every other mid-flash edit, is asserted as a sequence under `── flash clock ──` in the test rather than as isolated cases. Change the fingerprint's contents and those sequences are what tells you what you broke.
 
 The overflow ladder fails the same silent way: a rung that gives back the wrong number of columns leaves the line long, and the harness eats its tail. `--check` sweeps every column width from the natural width down to the floor, so a broken rung fails there rather than in whatever terminal someone happens to resize. Changing what a rung sheds means changing the `for rung in ...` list in the script and the matching order in `ladder_keys` in the test.
 
@@ -32,7 +35,8 @@ The command runs at 1 Hz for the session's whole life, so per-render cost is a r
 
 - One `jq` pass reads every field. Do not add a second.
 - `git` is pinned to `/opt/homebrew/bin/git`. The `git` on PATH on this machine is a corporate auth wrapper that costs about 390ms a call against 45ms for the real binary. Three calls a render made it the most expensive thing here by an order of magnitude.
-- The plan doc is parsed in a single `awk` pass.
+- The plan doc is parsed in a single `awk` pass, which now yields a mode and two candidate phases rather than one phase, so the two-form logic needs no second look at the file.
+- The acknowledgement clock reads and writes one small file, both with bash builtins, and spawns nothing. Measured at 29ms a render against 28ms before it, which is inside the noise.
 
 Any new segment should cost no process at all if it can be read from the payload, which almost everything can. Check `docs/payload-contract.md` before shelling out to anything.
 

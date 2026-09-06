@@ -6,23 +6,29 @@ Why the bar looks the way it does. The harness facts behind these choices are in
 
 ```
 {where} | {what answers} | {what is worked}                    {usage}
-~/Work/DMXL/dmon-studio-com  main | DeepSeek V4 Pro  xhigh | Phase 2/5: Custom SVG wordmark    142.3k ██████ 71%
+~/Work/DMXL/dmon-studio-com  main | DeepSeek V4 Pro  xhigh | 2/5: Custom SVG wordmark    142.3k ██████ 71%
 ```
 
 Left is pushed left, usage is pushed right, and the gap between them is whatever is left over. Groups are separated by a grey pipe rather than by icons or spacing alone, because at this density colour was not enough on its own to show where one thing ended and the next began. A group that has nothing in it is skipped along with its divider, so there are never dangling pipes.
 
 ## Icons
 
-Only two, on the segments where a glyph says something a colour cannot:
+Only where a glyph says something a colour cannot:
 
-| Glyph | Codepoint | Segment |
-|---|---|---|
-|  | `U+F126` | branch |
-|  | `U+F0E7` | effort |
+| Glyph | Codepoint | Segment | Says |
+|---|---|---|---|
+|  | `U+F126` | branch | this is a branch |
+|  | `U+F0E7` | effort | this is effort |
+| ✓ | `U+2713` | phase | this phase is finished |
+| → | `U+2192` | phase | this phase has not started |
 
-`U+F126` is deliberately the same glyph `POWERLEVEL9K_VCS_BRANCH_ICON` renders in the prompt two lines below, so the bar and the prompt agree. The directory, the token count and the percentage are identified by position and format, so a glyph there would be decoration. Model and phase had icons briefly and lost them once the dividers made them redundant.
+`U+F126` is deliberately the same glyph `POWERLEVEL9K_VCS_BRANCH_ICON` renders in the prompt two lines below, so the bar and the prompt agree. The directory, the token count and the percentage are identified by position and format, so a glyph there would be decoration. The model had an icon briefly and lost it once the dividers made it redundant.
 
-Requires a Nerd Font. This machine runs MesloLGS NF in iTerm2, where every glyph is single width by design, which the width arithmetic depends on.
+The two on the phase are a later addition and do different work from the first two. They are not labels, they are the segment's state: a number with no glyph is a phase in flight, with a check is one just finished, with an arrow is one not yet started. A word would have said the same and cost five to seven columns; the glyph costs one and leaves the fraction on the line, which the [overflow ladder](#overflow) then has something to collapse to.
+
+They are also plain Unicode rather than Nerd Font private use, unlike the first two. The branch and effort icons are decoration and degrade to a missing glyph box on an unpatched font; these two carry meaning, so they come from a range an ordinary monospace font already has. The first two require a Nerd Font. This machine runs MesloLGS NF in iTerm2, where every glyph is single width by design, which the width arithmetic depends on.
+
+All four stay out of the measured copy of their cell and are counted in that cell's own `extra_cols` instead, because each is one column but three bytes and `${#var}` only agrees with that under a UTF-8 locale.
 
 ## Palette
 
@@ -40,6 +46,8 @@ Every colour is a `C_*` constant at the top of the script. Two rules govern the 
 | `C_DIVIDER` | 240 | grey pipe |
 | `C_MODEL` | 250 | light grey |
 | `C_PHASE_TITLE` | 141 | light purple, a shade up from the phase number. 183 was tried and reads as pink |
+
+The phase glyphs take `C_PHASE` along with the number rather than a colour of their own. A green check was the obvious first try and is wrong twice over: green is already the low end of the usage scale, and colouring the glyph would make the phase the one group on the line whose colour means something other than which group it belongs to.
 | `C_TOKENS` | 245 | grey |
 | `C_BAR_EMPTY` | 239 | a shade below the divider, so the track recedes |
 
@@ -85,17 +93,17 @@ The line now owns its own width. Every printable piece is a cell carrying its ow
 | Rung | Sheds | Leaves |
 |---|---|---|
 | 1 | the leading path | the last folder |
-| 2 | the phase title and the word `Phase` | `3/5` |
+| 2 | the phase title | the glyph and `3/5` |
 | 3 | the last folder | nothing of the directory |
 | 4 | the six bar cells | a separator in the percentage's colour |
-| 5 | `3/5` | nothing of the phase |
+| 5 | the glyph and `3/5` | nothing of the phase |
 | 6 | effort | |
 | 7 | the token count | and with it the separator from rung 4 |
 | 8 | branch | |
 
 Three things this ordering is built on:
 
-**The coarse form of a thing outlives its detail.** The directory gives up its path before it gives up its name, and the phase gives up its title before it gives up its number. Two rungs of graceful degradation for each, rather than a single cliff.
+**The coarse form of a thing outlives its detail.** The directory gives up its path before it gives up its name, and the phase gives up its title before it gives up its number. Two rungs of graceful degradation for each, rather than a single cliff. The phase glyph rides along with the number rather than with the title, because one column buying the difference between a phase finished and a phase pending is the best trade on the line.
 
 **The bar degrades into punctuation rather than vanishing.** `122.8k | 78%` still reads as one object at a glance, where `122.8k 78%` reads as two numbers that happen to be adjacent. The separator takes the percentage's colour so the threshold is still legible at a glance, and because it is only a separator it disappears on its own once the token count goes.
 

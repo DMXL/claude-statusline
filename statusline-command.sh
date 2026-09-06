@@ -10,13 +10,14 @@ input=$(cat)
 
 # One jq pass. The unit separator keeps empty fields intact, which a tab would
 # not: bash treats tab as IFS whitespace and collapses runs of it.
-IFS=$'\037' read -r cwd model effort tokens used <<< "$(
+IFS=$'\037' read -r cwd model effort tokens used session <<< "$(
   printf '%s' "$input" | jq -r '[
     (.cwd // .workspace.current_dir // ""),
     (.model.display_name // ""),
     (.effort.level // ""),
     (.context_window.total_input_tokens // 0 | tostring),
-    (.context_window.used_percentage // "" | tostring)
+    (.context_window.used_percentage // "" | tostring),
+    (.session_id // "")
   ] | join("\u001f")' 2>/dev/null
 )"
 
@@ -56,21 +57,37 @@ for dir in "$cwd" "$repo_root"; do
 done
 
 # Marker set, all at column 0: [x] done, [/] or [~] in progress, [-] cancelled,
-# [ ] pending. The current phase is the first in-progress one, falling back to
-# the first pending one, so a plan with no [/] behaves exactly as it did before.
-# Cancelled phases count toward the total but are never current.
+# [ ] pending. Cancelled phases count toward the total but are never named.
 #
 # Both numbers come from the plan's own "Phase N:" labels when it has any: the
-# numerator is the current phase's own N, the denominator the highest N in the
-# file. A 0-indexed plan of six phases therefore reads "Phase 3/5", matching
-# what the document calls them. With no labels at all it falls back to position
-# and plain count. The label is then stripped from the title, since the bar
-# prints its own. An index of -1 means nothing is left to work on.
+# numerator is the named phase's own N, the denominator the highest N in the
+# file. A 0-indexed plan of six phases therefore reads "3/5", matching what the
+# document calls them. With no labels at all it falls back to position and plain
+# count. The label is stripped from the title, since the bar prints the number
+# itself and the word "Phase" is left off entirely: beside a title, a bare "3/5"
+# reads as a phase without spending five columns saying so.
+#
+# The parse yields a mode, because which phase to name is not one question:
+#
+#   live    a [/] exists, so that phase is in flight and is the only answer
+#   flash   no [/], but a phase is finished and another is pending, so there are
+#           two true things to say and the segment alternates between them
+#   next    no [/] and nothing finished, so the plan has not been started
+#   done    no [/] and nothing pending, so the plan is finished
+#   bare    checkboxes exist but none of the above, e.g. every phase cancelled
+#
+# "Finished" here means the last [x] reached before the first pending line, in
+# execution order. A [-] is not a finish and is never named, since "cancelled"
+# is not an accomplishment to acknowledge.
 phase_total=0
+phase_mode=""
 phase_index=-1
 phase_title=""
+phase_next_index=-1
+phase_next_title=""
 if [ -n "$plan" ]; then
-  read -r phase_total phase_index phase_title <<< "$(awk '
+  IFS=$'\037' read -r phase_total phase_mode phase_index phase_title \
+                      phase_next_index phase_next_title <<< "$(awk '
     function phnum(s,   m) {
       if (!match(s, /^[Pp]hase[[:space:]]*[0-9]+/)) return -1
       m = substr(s, RSTART, RLENGTH)
@@ -82,24 +99,120 @@ if [ -n "$plan" ]; then
       if (v >= 0) { labelled = 1; if (v > maxnum) maxnum = v }
       return v
     }
-    /^- \[[xX]\] /  { n++; see(substr($0, 7)); next }
+    # Tabs go because the fields are joined by one separator and split by it
+    # alone; a stray tab in a title would not break that, but a stray \037
+    # would, and stripping both is cheaper than reasoning about which.
+    function clean(s) {
+      gsub(/[\t\037]/, " ", s)
+      sub(/[[:space:]]+$/, "", s)
+      sub(/^[Pp]hase[[:space:]]*[0-9]+[[:space:]]*[.:)-]?[[:space:]]*/, "", s)
+      return s
+    }
+    /^- \[[xX]\] /  { n++; v = see(substr($0, 7))
+                      if (!pi) { di = 1; dtxt = substr($0, 7); dpos = n; dnum = v }
+                      next }
     /^- \[[\/~]\] / { n++; v = see(substr($0, 7))
-                     if (!ci) { ci = 1; cur = substr($0, 7); cpos = n; cnum = v } next }
+                      if (!ci) { ci = 1; ctxt = substr($0, 7); cpos = n; cnum = v }
+                      next }
     /^- \[-\] /     { n++; see(substr($0, 7)); next }
     /^- \[ \] /     { n++; v = see(substr($0, 7))
-                     if (!pi) { pi = 1; pend = substr($0, 7); ppos = n; pnum = v } next }
+                      if (!pi) { pi = 1; ptxt = substr($0, 7); ppos = n; pnum = v }
+                      next }
     END {
-      if (ci)      { title = cur;  pos = cpos; num = cnum }
-      else if (pi) { title = pend; pos = ppos; num = pnum }
-      else         { title = "";   pos = -1;   num = -1 }
       total = (labelled && maxnum >= 1) ? maxnum : n
-      idx = -1
-      if (pos > 0) idx = (labelled && num >= 0) ? num : pos
-      sub(/[[:space:]]+$/, "", title)
-      sub(/^[Pp]hase[[:space:]]*[0-9]+[[:space:]]*[.:)-]?[[:space:]]*/, "", title)
-      printf "%d %d %s", total + 0, idx + 0, title
+      mode = ""; idx = -1; title = ""; nidx = -1; ntitle = ""
+      if (ci) {
+        mode  = "live"
+        idx   = (labelled && cnum >= 0) ? cnum : cpos
+        title = clean(ctxt)
+      } else if (di && pi) {
+        mode   = "flash"
+        idx    = (labelled && dnum >= 0) ? dnum : dpos
+        title  = clean(dtxt)
+        nidx   = (labelled && pnum >= 0) ? pnum : ppos
+        ntitle = clean(ptxt)
+      } else if (pi) {
+        mode  = "next"
+        idx   = (labelled && pnum >= 0) ? pnum : ppos
+        title = clean(ptxt)
+      } else if (di) {
+        mode  = "done"
+        idx   = (labelled && dnum >= 0) ? dnum : dpos
+        title = clean(dtxt)
+      } else if (n > 0) {
+        mode = "bare"
+        idx  = total
+      }
+      printf "%d\037%s\037%d\037%s\037%d\037%s", \
+        total + 0, mode, idx + 0, title, nidx + 0, ntitle
     }
   ' "$plan")"
+fi
+
+# The five seconds between the two forms of a flash.
+#
+# Ticking a box used to make the segment jump silently from one pending phase to
+# the next, which said nothing about the one just finished. In flash mode the
+# segment names the finished phase for CLAUDE_STATUSLINE_FLASH seconds and the
+# pending one from then on, so ticking a box is acknowledged before the bar
+# moves on.
+#
+# Five seconds needs a start, and this script is stateless and runs only when
+# the harness spawns it, so it keeps one line in $TMPDIR: a fingerprint of what
+# is being displayed and the epoch it was first seen. A render whose fingerprint
+# matches inherits that clock, one whose fingerprint differs resets it. The
+# flash is therefore derived from the plan's state rather than animated over the
+# top of it, which is what makes the plan changing mid flash a non-event:
+# ticking a further box restarts the acknowledgement on the new phase, marking a
+# [/] leaves flash mode altogether and renders that phase at once, and editing
+# prose below the checklist changes no fingerprint and so changes nothing.
+#
+# The file is keyed by session id. Two sessions open on the same repo share the
+# plan doc, and a clock keyed on the doc alone would have each re-flashing the
+# other. A stale file from a previous boot fails the fingerprint and resets, and
+# a timestamp in the future gives a negative age, which resets too.
+#
+# Two things to know. The clock is $EPOCHSECONDS, which is bash 5, and with no
+# clock the segment simply settles on the pending phase. And the harness runs no
+# timer unless statusLine.refreshInterval is set, so without it the first form
+# holds until the next spawn happens for some other reason. Both degrade to
+# showing the less useful of two true things, never to naming the wrong phase.
+FLASH_SECS="${CLAUDE_STATUSLINE_FLASH:-5}"
+case "$FLASH_SECS" in ''|*[!0-9]*) FLASH_SECS=0 ;; esac
+flash_now="${CLAUDE_STATUSLINE_NOW:-${EPOCHSECONDS:-}}"
+case "$flash_now" in ''|*[!0-9]*) flash_now="" ;; esac
+
+phase_form="next"
+if [ "$phase_mode" = "flash" ] && [ -n "$flash_now" ] && [ "$FLASH_SECS" -gt 0 ]; then
+  fp="${phase_total}:${phase_index}:${phase_next_index}:${phase_title}:${phase_next_title}"
+  sid="${session//[^A-Za-z0-9._-]/_}"
+  state="${CLAUDE_STATUSLINE_STATE:-${TMPDIR:-/tmp}/claude-statusline-${sid:-nosession}}"
+  saved_fp=""; saved_at=""
+  if [ -r "$state" ]; then IFS=$'\037' read -r saved_fp saved_at < "$state"; fi
+  age=-1
+  if [ "$saved_fp" = "$fp" ]; then
+    case "$saved_at" in
+      ''|*[!0-9]*) ;;
+      *) age=$((flash_now - saved_at)) ;;
+    esac
+  fi
+  if [ "$age" -lt 0 ]; then
+    # The stderr redirection goes first deliberately. Redirections are applied
+    # left to right, so with it second bash reports a failing "> $state" to the
+    # real stderr, which the harness copies into its debug log once a second.
+    #
+    # A state file that cannot be written means no clock can be kept at all, so
+    # this falls back to what a missing clock does and settles on the pending
+    # phase. Letting it stand at age zero instead would acknowledge the finished
+    # phase on every render forever, which is the one outcome worse than not
+    # acknowledging it.
+    if printf '%s\037%s\n' "$fp" "$flash_now" 2>/dev/null > "$state"; then
+      age=0
+    else
+      age="$FLASH_SECS"
+    fi
+  fi
+  [ "$age" -lt "$FLASH_SECS" ] && phase_form="done"
 fi
 
 # Nerd Font glyphs (MesloLGS NF, matching the p10k prompt): U+F126 branch and
@@ -109,6 +222,8 @@ fi
 # UTF-8 locale. A hook inherits whatever LANG the terminal had.
 ICO_BRANCH=""
 ICO_EFFORT=""
+ICO_PHASE_DONE="✓"    # U+2713 CHECK MARK, the phase just finished
+ICO_PHASE_NEXT="→"    # U+2192 RIGHTWARDS ARROW, the phase coming up
 BAR_ON="█"
 BAR_OFF="█"
 BAR_CELLS=6
@@ -192,19 +307,49 @@ if [ -n "$effort" ]; then
   add_cell effort 2 "\033[38;5;${effort_color}m${ICO_EFFORT} ${effort}\033[0m" "$effort" 2
 fi
 
-# Group 3: what is being worked on. The bare "N/M" is kept aside because the
-# overflow ladder collapses to it before dropping the segment outright.
+# Group 3: what is being worked on, as "N/M: title", led by a glyph that says
+# which of the three things the number means: nothing for a phase in flight, a
+# check for one just finished, an arrow for one not started. The glyph carries
+# the state and the colour stays categorical, so magenta still means phase and
+# nothing here competes with the usage colours.
+#
+# The short form, glyph and number without the title, is built here rather than
+# in the ladder, so the ladder never has to know a colour. Both forms give back
+# the same two columns the glyph and its space are worth, which is why the rung
+# does not touch the cell's own count.
 phase_num=""
-if [ "$phase_total" -gt 0 ]; then
+phase_short_c=""
+if [ "$phase_total" -gt 0 ] && [ -n "$phase_mode" ]; then
+  phase_lead=""
+  case "$phase_mode" in
+    flash)
+      if [ "$phase_form" = "done" ]; then
+        phase_lead="$ICO_PHASE_DONE"
+      else
+        phase_lead="$ICO_PHASE_NEXT"
+        phase_index="$phase_next_index"
+        phase_title="$phase_next_title"
+      fi
+      ;;
+    done) phase_lead="$ICO_PHASE_DONE" ;;
+    next) phase_lead="$ICO_PHASE_NEXT" ;;
+  esac
   [ "$phase_index" -ge 0 ] || phase_index="$phase_total"
   phase_num="${phase_index}/${phase_total}"
-  pc="\033[${C_PHASE}mPhase ${phase_num}\033[0m"
-  pp="Phase ${phase_num}"
+  phase_extra=0
+  if [ -n "$phase_lead" ]; then
+    phase_short_c="\033[${C_PHASE}m${phase_lead} ${phase_num}\033[0m"
+    phase_extra=2
+  else
+    phase_short_c="\033[${C_PHASE}m${phase_num}\033[0m"
+  fi
+  pc="$phase_short_c"
+  pp="${phase_num}"
   if [ -n "$phase_title" ] && [ "${#phase_title}" -le 32 ]; then
     pc+="\033[${C_PHASE}m:\033[0m \033[38;5;${C_PHASE_TITLE}m${phase_title}\033[0m"
     pp+=": ${phase_title}"
   fi
-  add_cell phase 3 "$pc" "$pp" 0
+  add_cell phase 3 "$pc" "$pp" "$phase_extra"
 fi
 
 # Group 4: context tokens, then a usage bar and its percentage. The percentage is
@@ -329,7 +474,7 @@ if [ "$budget" -gt 0 ]; then
         ;;
       phase_short)
         if [ -n "${idx_phase:-}" ]; then
-          cell_c[$idx_phase]="\033[${C_PHASE}m${phase_num}\033[0m"
+          cell_c[$idx_phase]="$phase_short_c"
           cell_p[$idx_phase]="$phase_num"
         fi
         ;;

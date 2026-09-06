@@ -39,3 +39,10 @@ Any new segment should cost no process at all if it can be read from the payload
 - Colours are constants in the `C_*` block at the top. Do not inline a colour in the render code.
 - Basic ANSI (30 to 37) follows the terminal's colour scheme; every `38;5;N` is a fixed xterm value that does not. The location group is basic on purpose, the rest is pinned.
 - Nerd Font glyphs are written by codepoint in a comment next to their constant, because a bare glyph in a diff or a paste is easy to lose. This has already happened once: both icons were silently written as empty strings and the width maths went with them.
+
+## Local references
+
+Neither path below is in the repo, so both are dead ends for anyone reading this on GitHub. They are the two places the design decisions here were actually worked out.
+
+- `~/Documents/Claude/Notes/claude/claude-07-statusline.md`, deep research on the harness contract, verified against the installed binary. `docs/payload-contract.md` is the summary of it that matters to this script.
+- `~/Work/DMXL/CLAUDE.md` under "The plan doc", the convention the phase segment parses. Change one and the other has to follow.

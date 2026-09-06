@@ -70,10 +70,6 @@ The current phase is the first `[/]`, falling back to the first `[ ]`. Both numb
 
 The suite covers every optional field, all five effort levels, the usage thresholds, the no-git and no-plan paths, malformed stdin, and right-alignment under both a UTF-8 locale and `LC_ALL=C`.
 
-## Related
-
-Deep research on the harness contract, verified against the installed binary, lives in `~/Documents/Claude/Notes/claude/claude-07-statusline.md`. The plan doc convention it feeds is in `~/Work/DMXL/CLAUDE.md` under "The plan doc".
-
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

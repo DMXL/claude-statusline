@@ -76,6 +76,37 @@ Three decisions worth keeping:
 
 The token count beside it is window occupancy, not session spend. See the payload contract for why nothing better exists.
 
+## Overflow
+
+Before the ladder existed the script had no concept of not fitting. Once the padding arithmetic went negative it fell back to a two-space join and emitted whatever it had, and the harness truncated the result. That truncation cuts the tail, so the order in which things died was purely positional: the percentage first, then the bar, then the token count. The right half exists to show how much room is left, and it was the first thing to go.
+
+The line now owns its own width. Every printable piece is a cell carrying its own column count, groups are recomposed from whatever is still alive, and a ladder sheds cells one rung at a time until the line fits.
+
+| Rung | Sheds | Leaves |
+|---|---|---|
+| 1 | the leading path | the last folder |
+| 2 | the phase title and the word `Phase` | `3/5` |
+| 3 | the last folder | nothing of the directory |
+| 4 | the six bar cells | a separator in the percentage's colour |
+| 5 | `3/5` | nothing of the phase |
+| 6 | effort | |
+| 7 | the token count | and with it the separator from rung 4 |
+| 8 | branch | |
+
+Three things this ordering is built on:
+
+**The coarse form of a thing outlives its detail.** The directory gives up its path before it gives up its name, and the phase gives up its title before it gives up its number. Two rungs of graceful degradation for each, rather than a single cliff.
+
+**The bar degrades into punctuation rather than vanishing.** `122.8k | 78%` still reads as one object at a glance, where `122.8k 78%` reads as two numbers that happen to be adjacent. The separator takes the percentage's colour so the threshold is still legible at a glance, and because it is only a separator it disappears on its own once the token count goes.
+
+**Model and percentage are the floor.** Everything else on the line is recoverable from somewhere else on screen or from a moment's thought. Which model is answering, and how close the window is to full, are not.
+
+A separator only exists to divide two things, so it is skipped whenever it would land at either end of what survives in its group. That is what keeps a shed segment from leaving a dangling pipe behind, and it applies to the group pipes and to the degraded bar alike.
+
+Two constraints the rungs respect. Nothing spawns a process, since this runs at 1 Hz for the whole session: the whole ladder is bash arithmetic over the cell arrays, and it costs about 3ms against a 59ms render dominated by the `jq` and `git` calls. Nothing slices a string either, because `${str:0:n}` counts bytes and would split a glyph, so every rung either drops a cell outright or swaps it for a shorter whole token.
+
+One consequence worth knowing: the rung a line sits on can change without the terminal resizing, because the content moves too. A token count crossing from `9.9k` to `10.1k` is one column wider and can be enough to push a line onto the next rung.
+
 ## What was dropped
 
 **The clock.** It only advanced when something else did, which made it quietly wrong, and `refreshInterval: 1` existed largely to keep it honest. A bar answers "how much room is left" faster than a timestamp answers anything.

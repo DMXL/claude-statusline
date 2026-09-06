@@ -2,7 +2,9 @@
 # Claude Code status line — inspired by Powerlevel10k lean theme
 # Left:  dir branch | model effort | phase        (groups split by a grey pipe)
 # Right: context tokens  usage bar  usage%
-# The right half is right-aligned to $COLUMNS, which the harness exports.
+# The right half is right-aligned to $COLUMNS, which the harness exports, and
+# when the content will not fit in it the line sheds segments by priority rather
+# than letting the harness cut its tail. See the ladder under "Fit".
 
 input=$(cat)
 
@@ -133,19 +135,50 @@ C_USE_MID=178         # 50 to 69%, yellow
 C_USE_HIGH=208        # 70 to 89%, orange
 C_USE_FULL=196        # 90% and over, red
 
-extra_cols=0
+# ── Cells ────────────────────────────────────────────────────────────────────
+#
+# Every printable piece is a cell, held across parallel arrays: an id, the group
+# it belongs to, its coloured form, the plain form that gets measured, the
+# columns the plain form does not carry, and a role. Cells inside a group are
+# joined by a space, groups by a grey pipe, and the left half is padded away from
+# the right half.
+#
+# The per-cell width is what makes overflow handling possible at all. A single
+# accumulated extra_cols cannot say how many columns come back when a segment is
+# dropped, so the count has to live on the segment that owns it.
+n_cells=0
+cell_id=(); cell_g=(); cell_c=(); cell_p=(); cell_x=(); cell_r=(); cell_a=()
+
+# add_cell id group coloured plain extra_columns [role]
+#
+# Role "div" marks a cell that exists only to separate two others. It is skipped
+# whenever it would land at either end of what survives in its group, which is
+# what keeps a dangling separator off the line.
+add_cell() {
+  cell_id[$n_cells]="$1"; cell_g[$n_cells]="$2"; cell_c[$n_cells]="$3"
+  cell_p[$n_cells]="$4";  cell_x[$n_cells]="$5"; cell_r[$n_cells]="${6:-cell}"
+  cell_a[$n_cells]=1
+  eval "idx_$1=$n_cells"   # index by name, so the ladder never has to search
+  n_cells=$((n_cells + 1))
+}
+
+drop_cell() {
+  local n="idx_$1"
+  eval "n=\${$n:--1}"
+  [ "$n" -ge 0 ] && cell_a[$n]=0
+  return 0
+}
 
 # Group 1: where you are
-g1="\033[${C_DIR}m${short_cwd}\033[0m"
-g1p="${short_cwd}"
+add_cell cwd 1 "\033[${C_DIR}m${short_cwd}\033[0m" "$short_cwd" 0
 if [ -n "$branch" ]; then
-  g1+=" \033[${C_BRANCH}m${ICO_BRANCH} ${branch}\033[0m"
-  g1p+=" ${branch}"
-  extra_cols=$((extra_cols + 2))
+  # Two extra columns: the glyph itself and the space after it, neither of which
+  # is in the measured copy.
+  add_cell branch 1 "\033[${C_BRANCH}m${ICO_BRANCH} ${branch}\033[0m" "$branch" 2
 fi
 
-# Group 2: what is answering. Effort is colour coded by level, since the level
-# is the thing worth spotting at a glance rather than the word itself.
+# Group 2: what is answering. Effort is colour coded by level, since the level is
+# the thing worth spotting at a glance rather than the word itself.
 case "$effort" in
   max)          effort_color=$C_EFFORT_MAX ;;
   high|xhigh)   effort_color=$C_EFFORT_HIGH ;;
@@ -154,52 +187,28 @@ case "$effort" in
   *)            effort_color=$C_EFFORT_OTHER ;;
 esac
 
-g2=""
-g2p=""
-if [ -n "$model" ]; then
-  g2="\033[38;5;${C_MODEL}m${model}\033[0m"
-  g2p="${model}"
-fi
+[ -n "$model" ] && add_cell model 2 "\033[38;5;${C_MODEL}m${model}\033[0m" "$model" 0
 if [ -n "$effort" ]; then
-  if [ -n "$g2" ]; then g2+=" "; g2p+=" "; fi
-  g2+="\033[38;5;${effort_color}m${ICO_EFFORT} ${effort}\033[0m"
-  g2p+="${effort}"
-  extra_cols=$((extra_cols + 2))
+  add_cell effort 2 "\033[38;5;${effort_color}m${ICO_EFFORT} ${effort}\033[0m" "$effort" 2
 fi
 
-# Group 3: what is being worked on
-g3=""
-g3p=""
+# Group 3: what is being worked on. The bare "N/M" is kept aside because the
+# overflow ladder collapses to it before dropping the segment outright.
+phase_num=""
 if [ "$phase_total" -gt 0 ]; then
   [ "$phase_index" -ge 0 ] || phase_index="$phase_total"
-  g3="\033[${C_PHASE}mPhase ${phase_index}/${phase_total}\033[0m"
-  g3p="Phase ${phase_index}/${phase_total}"
+  phase_num="${phase_index}/${phase_total}"
+  pc="\033[${C_PHASE}mPhase ${phase_num}\033[0m"
+  pp="Phase ${phase_num}"
   if [ -n "$phase_title" ] && [ "${#phase_title}" -le 32 ]; then
-    g3+="\033[${C_PHASE}m:\033[0m \033[38;5;${C_PHASE_TITLE}m${phase_title}\033[0m"
-    g3p+=": ${phase_title}"
+    pc+="\033[${C_PHASE}m:\033[0m \033[38;5;${C_PHASE_TITLE}m${phase_title}\033[0m"
+    pp+=": ${phase_title}"
   fi
+  add_cell phase 3 "$pc" "$pp" 0
 fi
 
-# Join the non-empty groups with a grey pipe, so a missing group never leaves a
-# dangling divider.
-left=""
-left_plain=""
-for n in 1 2 3; do
-  eval "seg=\$g${n}; segp=\$g${n}p"
-  [ -n "$segp" ] || continue
-  if [ -n "$left" ]; then
-    left+=" \033[38;5;${C_DIVIDER}m|\033[0m "
-    left_plain+=" | "
-  fi
-  left+="$seg"
-  left_plain+="$segp"
-done
-
-# Right: context tokens, then a usage bar and its percentage. The percentage is
+# Group 4: context tokens, then a usage bar and its percentage. The percentage is
 # how much of the window is *used*, so the thresholds run cold to hot.
-right=""
-right_plain=""
-
 if [ -n "$tokens" ] && [ "$tokens" -gt 0 ] 2>/dev/null; then
   if [ "$tokens" -ge 1000000 ]; then
     tok=$(printf '%d.%dM' $((tokens / 1000000)) $(((tokens % 1000000) / 100000)))
@@ -208,10 +217,10 @@ if [ -n "$tokens" ] && [ "$tokens" -gt 0 ] 2>/dev/null; then
   else
     tok="$tokens"
   fi
-  right="\033[38;5;${C_TOKENS}m${tok}\033[0m"
-  right_plain="${tok}"
+  add_cell tokens 4 "\033[38;5;${C_TOKENS}m${tok}\033[0m" "$tok" 0
 fi
 
+bar_color=""
 if [ -n "$used" ]; then
   used_int=$(printf "%.0f" "$used")
   [ "$used_int" -lt 0 ] && used_int=0
@@ -236,26 +245,119 @@ if [ -n "$used" ]; then
   while [ "$i" -lt "$filled" ]; do bar_on+="$BAR_ON"; i=$((i + 1)); done
   while [ "$i" -lt "$BAR_CELLS" ]; do bar_off+="$BAR_OFF"; i=$((i + 1)); done
 
-  if [ -n "$right" ]; then right+=" "; right_plain+=" "; fi
-  right+="\033[38;5;${bar_color}m${bar_on}\033[0m\033[38;5;${C_BAR_EMPTY}m${bar_off}\033[0m"
-  right+=" \033[38;5;${bar_color}m${used_int}%\033[0m"
-  right_plain+=" ${used_int}%"
-  extra_cols=$((extra_cols + BAR_CELLS))
+  # The bar measures as nothing and counts BAR_CELLS columns, for the same reason
+  # the glyphs do.
+  add_cell bar 4 "\033[38;5;${bar_color}m${bar_on}\033[0m\033[38;5;${C_BAR_EMPTY}m${bar_off}\033[0m" "" "$BAR_CELLS"
+  add_cell pct 4 "\033[38;5;${bar_color}m${used_int}%\033[0m" "${used_int}%" 0
 fi
 
-# Right-align by padding the gap. COLUMNS is exported into the hook environment
-# by the CLI, so it is the terminal width at spawn time, but the TUI frame eats
-# a few columns and ink truncates the line with an ellipsis once it overflows.
-# Four is the observed margin; override it with CLAUDE_STATUSLINE_MARGIN. Falls
-# back to a two-space join when COLUMNS is missing or the line already fills it.
-gap="  "
+# ── Compose ──────────────────────────────────────────────────────────────────
+#
+# Sets LEFT/LEFT_W and RIGHT/RIGHT_W from whatever is still alive. Called once
+# per overflow rung, so it does the divider arithmetic afresh every time rather
+# than baking it in at build time: a group emptied by the ladder takes its pipe
+# with it, and a "div" cell left at either end of its group is skipped.
+compose() {
+  LEFT=""; LEFT_W=0; RIGHT=""; RIGHT_W=0
+  local g list i pos count gc gw
+  for g in 1 2 3 4; do
+    list=""; i=0
+    while [ "$i" -lt "$n_cells" ]; do
+      if [ "${cell_g[$i]}" = "$g" ] && [ "${cell_a[$i]}" = "1" ]; then list="$list $i"; fi
+      i=$((i + 1))
+    done
+    set -- $list
+    count=$#
+    gc=""; gw=0; pos=0
+    for i in "$@"; do
+      pos=$((pos + 1))
+      if [ "${cell_r[$i]}" = "div" ] && { [ "$pos" -eq 1 ] || [ "$pos" -eq "$count" ]; }; then
+        continue
+      fi
+      if [ -n "$gc" ]; then gc+=" "; gw=$((gw + 1)); fi
+      gc+="${cell_c[$i]}"
+      gw=$((gw + ${#cell_p[$i]} + cell_x[i]))
+    done
+    [ -n "$gc" ] || continue
+    if [ "$g" = 4 ]; then
+      RIGHT="$gc"; RIGHT_W="$gw"
+    else
+      if [ -n "$LEFT" ]; then
+        LEFT+=" \033[38;5;${C_DIVIDER}m|\033[0m "
+        LEFT_W=$((LEFT_W + 3))
+      fi
+      LEFT+="$gc"; LEFT_W=$((LEFT_W + gw))
+    fi
+  done
+}
+
+# ── Fit ──────────────────────────────────────────────────────────────────────
+#
+# COLUMNS is exported into the hook environment by the CLI, so it is the terminal
+# width at spawn time, but the TUI frame eats a few columns. Four is the observed
+# margin; override it with CLAUDE_STATUSLINE_MARGIN.
+#
+# Without this the script simply emitted a line too long and let ink truncate it,
+# which cuts from the right end and so killed the usage group first, exactly the
+# information the right half exists to show. The ladder instead sheds the
+# cheapest thing first and stops the moment the line fits. Every rung is
+# arithmetic and whole tokens: nothing spawns a process, and nothing slices a
+# string, since ${str:0:n} counts bytes and would split a glyph.
+#
+# Two spaces is the minimum gap, so a fit means the line can still be aligned. If
+# the ladder runs out and it still does not fit, the old behaviour stands: a
+# two-space join and an ellipsis from ink.
 margin="${CLAUDE_STATUSLINE_MARGIN:-4}"
+budget=0
 case "$COLUMNS" in
   ''|*[!0-9]*) ;;
-  *)
-    pad=$((COLUMNS - margin - ${#left_plain} - ${#right_plain} - extra_cols))
-    if [ "$pad" -ge 2 ]; then printf -v gap '%*s' "$pad" ''; fi
-    ;;
+  *) budget=$((COLUMNS - margin)) ;;
 esac
 
-printf "%b%s%b" "$left" "$gap" "$right"
+compose
+if [ "$budget" -gt 0 ]; then
+  for rung in cwd_short phase_short cwd_drop bar_divider phase_drop \
+              effort_drop tokens_drop branch_drop; do
+    [ $((LEFT_W + 2 + RIGHT_W)) -le "$budget" ] && break
+    case "$rung" in
+      cwd_short)
+        base="${short_cwd##*/}"
+        if [ -n "$base" ] && [ "$base" != "$short_cwd" ] && [ -n "${idx_cwd:-}" ]; then
+          cell_c[$idx_cwd]="\033[${C_DIR}m${base}\033[0m"
+          cell_p[$idx_cwd]="$base"
+        fi
+        ;;
+      phase_short)
+        if [ -n "${idx_phase:-}" ]; then
+          cell_c[$idx_phase]="\033[${C_PHASE}m${phase_num}\033[0m"
+          cell_p[$idx_phase]="$phase_num"
+        fi
+        ;;
+      cwd_drop)    drop_cell cwd ;;
+      bar_divider)
+        # The bar becomes a separator in the percentage's own colour, so the
+        # right half still reads as one thing. As a div it disappears on its own
+        # once the token count goes.
+        if [ -n "${idx_bar:-}" ]; then
+          cell_c[$idx_bar]="\033[38;5;${bar_color}m|\033[0m"
+          cell_p[$idx_bar]="|"
+          cell_x[$idx_bar]=0
+          cell_r[$idx_bar]="div"
+        fi
+        ;;
+      phase_drop)  drop_cell phase ;;
+      effort_drop) drop_cell effort ;;
+      tokens_drop) drop_cell tokens ;;
+      branch_drop) drop_cell branch ;;
+    esac
+    compose
+  done
+fi
+
+gap="  "
+if [ "$budget" -gt 0 ]; then
+  pad=$((budget - LEFT_W - RIGHT_W))
+  if [ "$pad" -ge 2 ]; then printf -v gap '%*s' "$pad" ''; fi
+fi
+
+printf "%b%s%b" "$LEFT" "$gap" "$RIGHT"

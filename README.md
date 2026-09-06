@@ -19,6 +19,27 @@ Three groups on the left split by a grey pipe, one usage group pushed to the rig
 
 Groups with nothing in them disappear along with their divider, so a non-repo directory with no plan file renders `/tmp | Opus 5   8.2k █████ 12%`.
 
+## Overflow
+
+`COLUMNS` is a budget, not a hint. When the content will not fit, the line sheds it a rung at a time, cheapest loss first, and stops the moment it fits:
+
+| Rung | Effect |
+|---|---|
+| 1 | working directory collapses to its last folder |
+| 2 | phase collapses to `3/5`, losing both the title and the word |
+| 3 | working directory drops |
+| 4 | usage bar becomes a single separator in the percentage's own colour |
+| 5 | phase number drops |
+| 6 | effort drops |
+| 7 | token count drops, taking that separator with it |
+| 8 | branch drops |
+
+The model name and the used percentage are the last two things standing. A separator disappears whenever either of the things it separates does, so a shed segment never leaves a dangling pipe behind.
+
+The order is the `for rung in ...` list in the script, and reordering that list is the whole edit. Below the last rung, where even the model and the percentage do not fit, the script gives up and the harness truncates the line as it always did.
+
+Without this the script simply emitted an over-long line and let the harness cut the tail, which always ate the usage group first: `~/Work/DMXL/dmon-studio-com  main | DeepSeek V4 Pro  xhigh | Phase 3/5: Responsive static composition  122.8k █████…`
+
 ## Install
 
 The script is the deliverable; there is no build step. Point Claude Code at it in `~/.claude/settings.json`:
@@ -69,6 +90,8 @@ The current phase is the first `[/]`, falling back to the first `[ ]`. Both numb
 ```
 
 The suite covers every optional field, all five effort levels, the usage thresholds, the no-git and no-plan paths, malformed stdin, and right-alignment under both a UTF-8 locale and `LC_ALL=C`.
+
+The overflow ladder is checked by sweeping every column width from the natural width down to the floor, asserting three things at once: the line is exactly `COLUMNS` minus the margin wide the whole way down, nothing that has been shed ever comes back, and the widths at which things vanish run in the ladder's own order. Sweeping rather than pinning a rendering at a fixed width is deliberate, since the fixture lives under `mktemp` and its path length differs between machines.
 
 ## Licence
 

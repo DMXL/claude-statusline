@@ -20,9 +20,11 @@ Test before claiming anything works:
 
 Rendering by hand is not enough. Three things have broken silently in this script before, and all three are invisible to the eye:
 
-1. **Width drift.** The right half is aligned by padding to `$COLUMNS`, so any segment whose printed width differs from its measured width pushes the line off. Every segment is appended twice, once with colour and once plain, and the plain copy is what gets measured.
+1. **Width drift.** The right half is aligned by padding to `$COLUMNS`, so any cell whose printed width differs from its measured width pushes the line off. Every cell is built twice, once with colour and once plain, and carries its own count of the columns the plain copy does not hold. That count belongs on the cell rather than in one shared accumulator, because the overflow ladder has to know what a given cell gives back when it is shed.
 2. **Glyph accounting.** A Nerd Font glyph and a block character are one column but three bytes, and `${#var}` only agrees with that under a UTF-8 locale. Glyphs stay out of the `*_plain` strings and are counted in `extra_cols` instead. Never put one in a measured string, and never slice one with `${str:0:n}`, which counts bytes.
 3. **Silent failure.** A non-zero exit, a spawn failure or a timeout makes the harness keep the previous text with no error shown anywhere but the debug log. A broken script looks like a frozen one, so the script must never `set -e` and must degrade to rendering something.
+
+The overflow ladder fails the same silent way: a rung that gives back the wrong number of columns leaves the line long, and the harness eats its tail. `--check` sweeps every column width from the natural width down to the floor, so a broken rung fails there rather than in whatever terminal someone happens to resize. Changing what a rung sheds means changing the `for rung in ...` list in the script and the matching order in `ladder_keys` in the test.
 
 ## Performance
 
@@ -33,6 +35,8 @@ The command runs at 1 Hz for the session's whole life, so per-render cost is a r
 - The plan doc is parsed in a single `awk` pass.
 
 Any new segment should cost no process at all if it can be read from the payload, which almost everything can. Check `docs/payload-contract.md` before shelling out to anything.
+
+The overflow ladder recomposes the whole line once per rung, which sounds expensive and is not: it is bash arithmetic over the cell arrays and measures at about 3ms on a 59ms render, where the `jq` and `git` spawns are the rest. Keep it that way, and in particular keep every rung to whole tokens, since anything that needs to measure a substring wants a process.
 
 ## Conventions
 

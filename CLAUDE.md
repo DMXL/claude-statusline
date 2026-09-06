@@ -6,6 +6,8 @@ A `bash` status line for Claude Code. Read `README.md` first for the layout and 
 
 It is not a Node or TypeScript project, which departs from the DMXL stack default in `../CLAUDE.md` on purpose. The command runs once a second for the whole session, so interpreter startup is the dominant cost and `bash` plus one `jq` is the cheapest thing that can do the job. Do not port it to Node without first measuring both, and record the numbers here if you do.
 
+There is no plan doc checked in either. The DMXL convention in `../CLAUDE.md` asks for one at `docs/plan.md`; this project deliberately does without, so do not recreate it. The phase parser is covered by fixtures in `test/render-cases.sh` rather than by a plan file living here, and the Phase 0 to 4 roadmap as it stood at publication is still in history: `git show 7060a17:docs/plan.md`.
+
 There is no build step. `statusline-command.sh` is the source and the artifact. If a future phase introduces one, the generated file must not be the file anyone edits.
 
 ## Working on the script

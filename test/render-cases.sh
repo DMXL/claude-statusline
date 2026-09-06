@@ -94,13 +94,16 @@ case_phase() {
   fi
 }
 
-D="$here"
+# Every case points at a fixture, never at the project directory. An earlier
+# version used "$here" and so rendered this project's own plan doc, which meant
+# the assertions moved every time a phase was ticked.
+D="$repo"
 full='{"cwd":"'"$D"'","model":{"display_name":"DeepSeek V4 Pro"},"effort":{"level":"xhigh"},"context_window":{"total_input_tokens":142347,"used_percentage":71}}'
 
 [ "$check" -eq 0 ] && echo "── payload matrix ──"
-case_render "full"              120 "$full"
-case_render "full narrow"        80 "$full" loose
-case_render "full wide"         200 "$full"
+case_render "full"              180 "$full"
+case_render "full narrow"        96 "$full" loose
+case_render "full wide"         240 "$full"
 case_render "no effort"         120 '{"cwd":"'"$D"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'
 case_render "no model"          120 '{"cwd":"'"$D"'","context_window":{"total_input_tokens":8200,"used_percentage":12}}'
 case_render "no git no plan"    120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'

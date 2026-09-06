@@ -10,6 +10,10 @@ Turn the status line from a script that grew inside `~/.claude` into a project w
 - [ ] Phase 3: PR and worktree awareness
 - [ ] Phase 4: Theme adaptation
 
+## Repo
+
+Public at `github.com/DMXL/claude-statusline` since 2026-09-06, MIT licensed. Going public genericised the four places that named this machine's corporate git wrapper by path, and replaced the absolute install path in `README.md` with `/path/to/`. The pinned `/opt/homebrew/bin/git` default and the timing rationale behind it are unchanged, since that is the reason the pin exists.
+
 ## Phase 0: Extract into a project
 
 Status: complete.

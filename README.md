@@ -73,3 +73,7 @@ The suite covers every optional field, all five effort levels, the usage thresho
 ## Related
 
 Deep research on the harness contract, verified against the installed binary, lives in `~/Documents/Claude/Notes/claude/claude-07-statusline.md`. The plan doc convention it feeds is in `~/Work/DMXL/CLAUDE.md` under "The plan doc".
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).

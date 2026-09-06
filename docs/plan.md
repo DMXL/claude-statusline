@@ -5,8 +5,8 @@ Turn the status line from a script that grew inside `~/.claude` into a project w
 ## Phases
 
 - [x] Phase 0: Extract into a project
-- [ ] Phase 1: Test harness
-- [ ] Phase 2: Rate limits and cache health
+- [x] Phase 1: Test harness
+- [/] Phase 2: Rate limits and cache health
 - [ ] Phase 3: PR and worktree awareness
 - [ ] Phase 4: Theme adaptation
 
@@ -20,6 +20,8 @@ Status: complete.
 
 ## Phase 1: Test harness
 
+Status: complete. `./test/render-cases.sh --check` runs 41 assertions.
+
 Goal: no visual change can silently break the width arithmetic again.
 
 Tasks:
@@ -29,7 +31,12 @@ Tasks:
 3. Assert the phase parser separately against plan fixtures: 0-indexed, 1-indexed, reordered, `[/]` present and absent, `[-]` cancelled, all done, unlabelled titles, over-length title.
 4. Exit non-zero on any drift so it can gate a commit.
 
-Exit criteria: `./test/render-cases.sh --check` passes, and deliberately breaking the glyph accounting makes it fail.
+Exit criteria: `./test/render-cases.sh --check` passes, and deliberately breaking the glyph accounting makes it fail. Both negative controls verified: zeroing the branch icon's `extra_cols` contribution produces 6 failures, and mis-sizing the bar's produces 28.
+
+Two things the suite learned the hard way, worth not undoing:
+
+- **The width assertion must be strict equality.** An early version relaxed it to `-ge` so that content too wide to pad would pass, which silently accepted every over-long line, and an under-counted glyph produces exactly that. Cases whose content genuinely cannot fit are marked `loose` individually instead.
+- **The suite builds its own git repo.** It first ran from a directory that was not yet under git, so the branch segment never rendered, and the branch icon's accounting was never executed. A break in it passed cleanly. Never let a code path's coverage depend on where the suite happens to run.
 
 ## Phase 2: Rate limits and cache health
 

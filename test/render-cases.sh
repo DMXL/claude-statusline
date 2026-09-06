@@ -104,8 +104,8 @@ full='{"cwd":"'"$D"'","model":{"display_name":"DeepSeek V4 Pro"},"effort":{"leve
 case_render "full"              180 "$full"
 case_render "full narrow"        96 "$full" loose
 case_render "full wide"         240 "$full"
-case_render "no effort"         120 '{"cwd":"'"$D"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'
-case_render "no model"          120 '{"cwd":"'"$D"'","context_window":{"total_input_tokens":8200,"used_percentage":12}}'
+case_render "no effort"         180 '{"cwd":"'"$D"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'
+case_render "no model"          180 '{"cwd":"'"$D"'","context_window":{"total_input_tokens":8200,"used_percentage":12}}'
 case_render "no git no plan"    120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'
 case_render "no usage yet"      120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":0,"used_percentage":null}}'
 case_render "million tokens"    120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":1420000,"used_percentage":100}}'

@@ -6,7 +6,7 @@ Turn the status line from a script that grew inside `~/.claude` into a project w
 
 - [x] Phase 0: Extract into a project
 - [x] Phase 1: Test harness
-- [/] Phase 2: Rate limits and cache health
+- [ ] Phase 2: Rate limits and cache health
 - [ ] Phase 3: PR and worktree awareness
 - [ ] Phase 4: Theme adaptation
 

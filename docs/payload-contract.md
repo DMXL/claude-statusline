@@ -56,6 +56,10 @@ remaining_percentage   0-100, null before the first message
 
 **There is no cumulative token count anywhere in the payload.** `total_input_tokens` is the window's current size, `current_usage` is one call, and `cost` has no token fields. A true session total would need parsing `transcript_path`, which at 1 Hz is not worth it. The bar therefore shows window occupancy, not spend.
 
+**Every field here is read off one message.** Claude Code walks the transcript backwards for the most recent assistant message carrying a `usage` object and derives the whole block from it: `total_input_tokens` is that message's input plus cache creation plus cache reads, `used_percentage` is the same sum over the window size, and `current_usage` is the object itself. Nothing accumulates, and an in-flight message does not count: the figures move once per completed message, not during a stream.
+
+That has a consequence worth knowing before trusting a zero. A message whose usage object exists but is all zeros reads as an empty context window: `total_input_tokens: 0` and `used_percentage: 0`, held until a later message arrives with real figures. It is not a shape Anthropic's own API produces, but a proxy translating another provider into the Messages API emits it for any turn whose upstream reported no usage, and Claude Code's auto-compaction reads the same number, so a session stuck on it also stops compacting. The `/context` report guards against this by discarding a usage whose three token fields sum to zero; this payload is not given that guard.
+
 ### prompt_cache
 
 ```

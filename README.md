@@ -68,11 +68,29 @@ Everything tunable is a constant at the top of the script, plus these environmen
 | `CLAUDE_STATUSLINE_MARGIN` | `4` | columns left free at the right edge |
 | `CLAUDE_STATUSLINE_GIT` | `/opt/homebrew/bin/git` | git binary, pinned away from any slow auth wrapper on PATH |
 | `CLAUDE_STATUSLINE_FLASH` | `5` | seconds a finished phase is acknowledged before the bar moves to the next one. `0` skips the acknowledgement entirely |
-| `CLAUDE_STATUSLINE_STATE` | `$TMPDIR/claude-statusline-<session id>` | where the acknowledgement clock is kept |
+| `CLAUDE_STATUSLINE_STATE` | `$TMPDIR/claude-statusline-<session id>` | where the acknowledgement clock and the last context reading are kept |
 | `CLAUDE_STATUSLINE_NOW` | `$EPOCHSECONDS` | override the clock, for tests |
 | `COLUMNS` | set by the harness | terminal width, used for right alignment |
 
 Colours live in the `C_*` block at the top of the script, one line each.
+
+## The usage group
+
+`total_input_tokens` and `used_percentage` come straight from the payload, and both are read off one thing: the `usage` object on the last assistant message in the transcript. Claude Code derives its whole context gauge from that message, so whatever is on it is what the bar shows.
+
+That makes one payload impossible to take at face value. `used_percentage` is `null` until the first assistant message, and the group is absent for as long as that holds. Once it is a number the harness has found a message to read usage off, and `total_input_tokens` cannot then honestly be zero, since a window holding a message holds thousands of tokens. Zero there means the message carried an all-zero usage object, and the gauge reads a flat 0% until some later message arrives to correct it.
+
+That is not hypothetical. A proxy translating another provider's API into the Messages API emits exactly that shape for any turn whose upstream reported no usage, and the bar empties and refills a turn later. Claude Code discards such a usage in its own `/context` report for the same reason; the status line payload is not given that guard, so the script applies it:
+
+| Payload | Read as | Shown |
+|---|---|---|
+| `used_percentage` a number, tokens above zero | a reading | that reading, and it is remembered |
+| `used_percentage` a number, tokens zero | a message with no usage on it | the last reading remembered, or nothing if there is none |
+| `used_percentage` null | no reading yet | nothing, and what was remembered is dropped |
+
+The last row is why a null is handled separately from a zero rather than folded into it. After a `/clear` the window really is empty, and standing in what it held beforehand would be worse than showing nothing.
+
+The reading is kept in the same per-session state file as the acknowledgement clock, and the two are written together, so a render that moves both still costs one write.
 
 ## The plan doc
 
@@ -137,6 +155,8 @@ The clock is `$EPOCHSECONDS`, which is bash 5. With no clock the group settles o
 The suite covers every optional field, all five effort levels, the usage thresholds, the no-git and no-plan paths, malformed stdin, and right-alignment under both a UTF-8 locale and `LC_ALL=C`. Both glyph forms of the phase group get their own width cases in both locales, since a glyph is one column and three bytes and a form that let one into its measured copy would run two columns long with nothing about the line looking wrong.
 
 The acknowledgement clock is asserted as a sequence rather than as single renders, because what the group shows depends on what it showed before. The sequence walks a plan through ticking a box, ticking another one part way through the five seconds, editing prose below the checklist, marking a phase `[/]`, unticking, a clock that moves backwards, a missing state file and a corrupt one. `CLAUDE_STATUSLINE_NOW` and `CLAUDE_STATUSLINE_STATE` are what make that deterministic; the whole suite runs on a frozen clock.
+
+The context cache is a sequence too, for the same reason: a zeroed reading means different things depending on whether anything believable came before it. The sequence walks a real reading, a zeroed one held over it, recovery, a genuinely small window that must not be mistaken for a zeroed one, a null that empties the group and drops what was held, a foreign state file and an unwritable one.
 
 The overflow ladder is checked by sweeping every column width from the natural width down to the floor, asserting three things at once: the line is exactly `COLUMNS` minus the margin wide the whole way down, nothing that has been shed ever comes back, and the widths at which things vanish run in the ladder's own order. Sweeping rather than pinning a rendering at a fixed width is deliberate, since the fixture lives under `mktemp` and its path length differs between machines.
 

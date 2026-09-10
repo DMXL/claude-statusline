@@ -46,7 +46,15 @@ cols()  { python3 -c 'import sys;print(len(sys.stdin.read()))'; }
 export CLAUDE_STATUSLINE_NOW=1000
 export CLAUDE_STATUSLINE_STATE="$fixtures/flash-state"
 
-render() { printf '%s' "$2" | env COLUMNS="$1" bash "$script"; }
+# A fresh state file per render, so no case can inherit another's cached context
+# reading. Sharing one was fine while the file held only the flash clock, whose
+# fingerprint every case resets anyway; the context cache is keyed on nothing and
+# would have made the matrix order dependent.
+render() {
+  rm -f "$fixtures/render-state"
+  printf '%s' "$2" \
+    | env COLUMNS="$1" CLAUDE_STATUSLINE_STATE="$fixtures/render-state" bash "$script"
+}
 
 # render with the flash clock and its state file pinned, for the cases that turn
 # on either. A fresh state file plus any clock reads as age zero, so a case that
@@ -148,6 +156,8 @@ case_render "no model"          180 '{"cwd":"'"$D"'","context_window":{"total_in
 case_render "no git no plan"    120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":12}}'
 case_render "no usage yet"      120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":0,"used_percentage":null}}'
 case_render "no usage narrow"    40 '{"cwd":"'"$D"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":0,"used_percentage":null}}'
+case_render "zeroed usage"      120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":0,"used_percentage":0}}'
+case_render "zeroed usage narrow" 40 '{"cwd":"'"$D"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":0,"used_percentage":0}}'
 case_render "million tokens"    120 '{"cwd":"/tmp","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":1420000,"used_percentage":100}}'
 case_render "git branch"        180 '{"cwd":"'"$repo"'","model":{"display_name":"Opus 5"},"effort":{"level":"high"},"context_window":{"total_input_tokens":8200,"used_percentage":33}}'
 case_render "git branch narrow"  96 '{"cwd":"'"$repo"'","model":{"display_name":"Opus 5"},"context_window":{"total_input_tokens":8200,"used_percentage":33}}'
@@ -359,6 +369,75 @@ flash_step "seq: an unreadable state file"    1509 "$CHECK 2/4: Extraction"
 # the finished phase on every render for the rest of the session.
 flash_state="$fixtures/no-such-directory/state"
 flash_step "seq: an unwritable state file"    1509 "$ARROW 3/4: Rendering"
+
+# ── The context cache ───────────────────────────────────────────────────────
+#
+# A percentage with no tokens behind it is not a reading, it is a message whose
+# usage object was all zeros, and the harness hands it over as a flat 0%. What
+# the segment does with one depends on what it last saw, so these are a sequence
+# for the same reason the flash cases are.
+ctx_dir="$fixtures/context"
+ctx_state="$ctx_dir/state"
+mkdir -p "$ctx_dir"
+
+# The usage group as "tokens pct". The bar's blocks come out because they are the
+# one part of the line counted rather than measured, and they say nothing the
+# percentage beside them does not.
+ctx_group() {
+  sed "s/$BLOCK//g; s/  */ /g; s/ *$//" \
+    | grep -oE '([0-9][0-9.]*[kM]? )?[0-9]+%$'
+}
+
+ctx_read() { # total_input_tokens, used_percentage (JSON literals)
+  printf '%s' "{\"cwd\":\"$ctx_dir\",\"session_id\":\"context\",\"context_window\":{\"total_input_tokens\":$1,\"used_percentage\":$2}}" \
+    | env COLUMNS=200 CLAUDE_STATUSLINE_STATE="$ctx_state" bash "$script" | strip | ctx_group
+}
+
+ctx_step() { # label, tokens, used, expected
+  local got
+  got="$(ctx_read "$2" "$3")"
+  if [ "$check" -eq 0 ]; then
+    printf '%-38s -> %s\n' "$1" "$got"
+    return
+  fi
+  if [ "$got" = "$4" ]; then
+    pass=$((pass + 1))
+  else
+    fail=$((fail + 1))
+    printf 'FAIL  %-34s got [%s], want [%s]\n' "$1" "$got" "$4" >&2
+  fi
+}
+
+[ "$check" -eq 0 ] && echo && echo "── context cache ──"
+
+rm -f "$ctx_state"
+ctx_step "ctx: a reading is shown"           142347 71   "142.3k 71%"
+ctx_step "ctx: a zeroed usage holds it"      0      0    "142.3k 71%"
+ctx_step "ctx: and goes on holding it"       0      0    "142.3k 71%"
+ctx_step "ctx: a real reading takes over"    8200   12   "8.2k 12%"
+
+# A genuinely small window is not a zeroed usage, and keying the guard on the
+# percentage rather than the token count would have swallowed it.
+ctx_step "ctx: a real 0% is left alone"      900    0    "900 0%"
+
+# Null is the absence of a reading rather than a bad one. It empties the group,
+# and drops the cache with it: after a /clear the window really is empty and
+# standing in what it held before would be worse than showing nothing.
+ctx_step "ctx: null empties the group"       0      null ""
+ctx_step "ctx: and drops what was held"      0      0    ""
+ctx_step "ctx: recovering from empty"        8200   12   "8.2k 12%"
+
+# A state file this script never wrote holds no cache, so there is nothing to
+# stand in with and the group stays empty rather than rendering someone else's
+# integer.
+printf 'garbage\n' > "$ctx_state"
+ctx_step "ctx: a foreign state file"         0      0    ""
+
+# A state file that cannot be written at all. Every render is then the first one,
+# so a good reading still shows and a zeroed one still has nothing behind it.
+ctx_state="$fixtures/no-such-directory/state"
+ctx_step "ctx: unwritable, good reading"     8200   12   "8.2k 12%"
+ctx_step "ctx: unwritable, zeroed usage"     0      0    ""
 
 # ── The overflow ladder ──────────────────────────────────────────────────────
 #

@@ -21,6 +21,29 @@ IFS=$'\037' read -r cwd model effort tokens used session <<< "$(
   ] | join("\u001f")' 2>/dev/null
 )"
 
+# ── Session state ────────────────────────────────────────────────────────────
+#
+# One line in $TMPDIR, keyed by session id, carrying two unrelated things that
+# both have to outlive a render: the acknowledgement clock's fingerprint and the
+# epoch it was first seen, and the last context reading worth believing. Both are
+# read here and written once, together, further down.
+#
+# Keyed by session id because two sessions open on the same repo share a plan doc
+# and a context window of their own, and a file keyed on anything less would have
+# each overwriting the other. A stale file from a previous boot fails every check
+# below and is simply replaced.
+sid="${session//[^A-Za-z0-9._-]/_}"
+state="${CLAUDE_STATUSLINE_STATE:-${TMPDIR:-/tmp}/claude-statusline-${sid:-nosession}}"
+saved_fp=""; saved_at=""; saved_tokens=""; saved_used=""
+if [ -r "$state" ]; then
+  IFS=$'\037' read -r saved_fp saved_at saved_tokens saved_used < "$state"
+fi
+# A file written by something else, or by an older version of this script, must
+# never reach printf or arithmetic. Either field failing to be a plain integer
+# drops the pair, which is the same state as having no cache at all.
+case "$saved_tokens" in *[!0-9]*) saved_tokens=""; saved_used="" ;; esac
+case "$saved_used"   in *[!0-9]*) saved_tokens=""; saved_used="" ;; esac
+
 # Shorten home directory to ~
 home="$HOME"
 short_cwd="${cwd/#$home/\~}"
@@ -158,19 +181,15 @@ fi
 # moves on.
 #
 # Five seconds needs a start, and this script is stateless and runs only when
-# the harness spawns it, so it keeps one line in $TMPDIR: a fingerprint of what
-# is being displayed and the epoch it was first seen. A render whose fingerprint
-# matches inherits that clock, one whose fingerprint differs resets it. The
-# flash is therefore derived from the plan's state rather than animated over the
-# top of it, which is what makes the plan changing mid flash a non-event:
-# ticking a further box restarts the acknowledgement on the new phase, marking a
-# [/] leaves flash mode altogether and renders that phase at once, and editing
-# prose below the checklist changes no fingerprint and so changes nothing.
-#
-# The file is keyed by session id. Two sessions open on the same repo share the
-# plan doc, and a clock keyed on the doc alone would have each re-flashing the
-# other. A stale file from a previous boot fails the fingerprint and resets, and
-# a timestamp in the future gives a negative age, which resets too.
+# the harness spawns it, so it takes one from the state file read at the top: a
+# fingerprint of what is being displayed and the epoch it was first seen. A
+# render whose fingerprint matches inherits that clock, one whose fingerprint
+# differs resets it. The flash is therefore derived from the plan's state rather
+# than animated over the top of it, which is what makes the plan changing mid
+# flash a non-event: ticking a further box restarts the acknowledgement on the
+# new phase, marking a [/] leaves flash mode altogether and renders that phase at
+# once, and editing prose below the checklist changes no fingerprint and so
+# changes nothing. A timestamp in the future gives a negative age, which resets.
 #
 # Two things to know. The clock is $EPOCHSECONDS, which is bash 5, and with no
 # clock the segment simply settles on the pending phase. And the harness runs no
@@ -182,38 +201,77 @@ case "$FLASH_SECS" in ''|*[!0-9]*) FLASH_SECS=0 ;; esac
 flash_now="${CLAUDE_STATUSLINE_NOW:-${EPOCHSECONDS:-}}"
 case "$flash_now" in ''|*[!0-9]*) flash_now="" ;; esac
 
-phase_form="next"
+# What to keep in the state file, starting as what was found in it. The decision
+# is made here and the write happens once, below, together with the context
+# reading, so that a render changing both still costs a single write.
+keep_fp="$saved_fp"
+keep_at="$saved_at"
+flash_age=-1
+flash_reset=0
 if [ "$phase_mode" = "flash" ] && [ -n "$flash_now" ] && [ "$FLASH_SECS" -gt 0 ]; then
   fp="${phase_total}:${phase_index}:${phase_next_index}:${phase_title}:${phase_next_title}"
-  sid="${session//[^A-Za-z0-9._-]/_}"
-  state="${CLAUDE_STATUSLINE_STATE:-${TMPDIR:-/tmp}/claude-statusline-${sid:-nosession}}"
-  saved_fp=""; saved_at=""
-  if [ -r "$state" ]; then IFS=$'\037' read -r saved_fp saved_at < "$state"; fi
-  age=-1
   if [ "$saved_fp" = "$fp" ]; then
     case "$saved_at" in
       ''|*[!0-9]*) ;;
-      *) age=$((flash_now - saved_at)) ;;
+      *) flash_age=$((flash_now - saved_at)) ;;
     esac
   fi
-  if [ "$age" -lt 0 ]; then
-    # The stderr redirection goes first deliberately. Redirections are applied
-    # left to right, so with it second bash reports a failing "> $state" to the
-    # real stderr, which the harness copies into its debug log once a second.
-    #
-    # A state file that cannot be written means no clock can be kept at all, so
-    # this falls back to what a missing clock does and settles on the pending
-    # phase. Letting it stand at age zero instead would acknowledge the finished
-    # phase on every render forever, which is the one outcome worse than not
-    # acknowledging it.
-    if printf '%s\037%s\n' "$fp" "$flash_now" 2>/dev/null > "$state"; then
-      age=0
-    else
-      age="$FLASH_SECS"
-    fi
+  if [ "$flash_age" -lt 0 ]; then
+    keep_fp="$fp"; keep_at="$flash_now"; flash_age=0; flash_reset=1
   fi
-  [ "$age" -lt "$FLASH_SECS" ] && phase_form="done"
 fi
+
+# ── The context reading ──────────────────────────────────────────────────────
+#
+# used_percentage is null until the first assistant message, and the usage group
+# is absent for as long as that holds. Once it is a number the harness has found
+# a message to read usage off, and total_input_tokens cannot then honestly be
+# zero: a window holding a message holds thousands of tokens. Zero there means
+# the message carried an all-zero usage object, which is what a translating proxy
+# emits for a turn whose upstream reported no usage at all, and the gauge reads
+# 0% until the next message arrives to correct it. Claude Code discards such a
+# usage in its own /context report for exactly this reason; the status line
+# payload is not given that guard, so it is applied here.
+#
+# The last believable reading stands in, so the bar holds steady rather than
+# emptying and refilling. A null percentage is not a bad reading but the absence
+# of one, and it drops the cache instead of standing in for it: after a /clear
+# the window really is empty, and showing what it held beforehand would be worse
+# than showing nothing.
+keep_tokens=""
+keep_used=""
+if [ -n "$used" ]; then
+  if [ "$tokens" -gt 0 ] 2>/dev/null; then
+    keep_tokens="$tokens"; keep_used="$used"
+  elif [ -n "$saved_used" ]; then
+    tokens="$saved_tokens"; used="$saved_used"
+    keep_tokens="$saved_tokens"; keep_used="$saved_used"
+  else
+    used=""   # nothing believable to show, and nothing held back to show instead
+  fi
+fi
+
+# The one write. It runs whenever any field moved, which is far more often than
+# the fingerprint alone moves, since the context reading changes every turn.
+#
+# The stderr redirection goes first deliberately. Redirections are applied left
+# to right, so with it second bash reports a failing "> $state" to the real
+# stderr, which the harness copies into its debug log once a second.
+if [ "$keep_fp" != "$saved_fp" ] || [ "$keep_at" != "$saved_at" ] \
+   || [ "$keep_tokens" != "$saved_tokens" ] || [ "$keep_used" != "$saved_used" ]; then
+  if ! printf '%s\037%s\037%s\037%s\n' \
+         "$keep_fp" "$keep_at" "$keep_tokens" "$keep_used" 2>/dev/null > "$state"; then
+    # No clock can be kept at all, so a reset falls back to what a missing clock
+    # does and settles on the pending phase. Letting it stand at age zero instead
+    # would acknowledge the finished phase on every render forever, which is the
+    # one outcome worse than not acknowledging it. The context reading needs no
+    # such fallback: without a cache it simply has nothing to stand in with.
+    [ "$flash_reset" -eq 1 ] && flash_age="$FLASH_SECS"
+  fi
+fi
+
+phase_form="next"
+[ "$flash_age" -ge 0 ] && [ "$flash_age" -lt "$FLASH_SECS" ] && phase_form="done"
 
 # Nerd Font glyphs (MesloLGS NF, matching the p10k prompt): U+F126 branch and
 # U+F0E7 effort. Along with the bar characters they are deliberately kept out of

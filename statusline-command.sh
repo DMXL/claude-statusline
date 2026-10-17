@@ -70,14 +70,28 @@ fi
 # Phase progress from a plan file. Counts only checkboxes at column 0, so
 # indented per-step checkboxes inside a phase do not inflate the total.
 # Override the filename with CLAUDE_STATUSLINE_PLAN (e.g. PROGRESS.md).
+#
+# The lookup is case-insensitive, so both the DMXL "docs/plan.md" and an
+# uppercase "PLAN.md" resolve. The trailing * is what makes bash treat the name
+# as a glob at all (a metacharacter-free word is never matched against the
+# directory), and the exact-name test then discards any longer match. Both
+# options are restored afterwards so nothing downstream inherits them.
 plan_name="${CLAUDE_STATUSLINE_PLAN:-PLAN.md}"
 plan=""
+shopt -q nullglob; had_nullglob=$?
+shopt -q nocaseglob; had_nocaseglob=$?
+shopt -q nocasematch; had_nocasematch=$?
+shopt -s nullglob nocaseglob nocasematch
 for dir in "$cwd" "$repo_root"; do
   [ -n "$dir" ] || continue
-  for cand in "$dir/$plan_name" "$dir/docs/$plan_name"; do
-    if [ -f "$cand" ]; then plan="$cand"; break 2; fi
+  for cand in "$dir/"$plan_name* "$dir/docs/"$plan_name*; do
+    [ -f "$cand" ] || continue
+    if [[ ${cand##*/} == "$plan_name" ]]; then plan="$cand"; break 2; fi
   done
 done
+[ "$had_nullglob" -eq 0 ] || shopt -u nullglob
+[ "$had_nocaseglob" -eq 0 ] || shopt -u nocaseglob
+[ "$had_nocasematch" -eq 0 ] || shopt -u nocasematch
 
 # Marker set, all at column 0: [x] done, [/] or [~] in progress, [-] cancelled,
 # [ ] pending. Cancelled phases count toward the total but are never named.
@@ -275,9 +289,10 @@ phase_form="next"
 
 # Nerd Font glyphs (MesloLGS NF, matching the p10k prompt): U+F126 branch and
 # U+F0E7 effort. Along with the bar characters they are deliberately kept out of
-# the *_plain strings and counted in extra_cols instead, because each renders a
-# single column but is three bytes, and ${#var} only agrees with that under a
-# UTF-8 locale. A hook inherits whatever LANG the terminal had.
+# the measured strings and counted in a cell's extra_columns instead, because
+# each renders a single column but is three bytes, and a character count only
+# agrees with that under a UTF-8 locale. A hook inherits whatever LANG the
+# terminal had.
 ICO_BRANCH=""
 ICO_EFFORT=""
 ICO_PHASE_DONE="✓"    # U+2713 CHECK MARK, the phase just finished
@@ -308,28 +323,70 @@ C_USE_MID=178         # 50 to 69%, yellow
 C_USE_HIGH=208        # 70 to 89%, orange
 C_USE_FULL=196        # 90% and over, red
 
+# ── Measuring ────────────────────────────────────────────────────────────────
+#
+# Printed width of a string, in columns, left in $dw.
+#
+# ${#s} counts characters, and for East Asian text that is not the same number: a
+# CJK ideograph, a kana or a fullwidth form is one character and two columns. Any
+# such string measured with ${#s} comes out short, the budget then says the line
+# fits when it is seven columns too long, and the harness eats the tail of the
+# right half, which is the usage percentage. Everything user supplied can be
+# wide: a plan title, a directory name, a branch.
+#
+# The codepoint comes from printf's "'c" form, which is a builtin, so the loop
+# costs no process. It steps by character rather than by byte, which is what
+# ${s:0:1} does under a UTF-8 locale. Ranges are the East Asian Wide and
+# Fullwidth blocks plus the emoji planes. Private use is deliberately absent:
+# the Nerd Font glyphs live there and print one column.
+measure() {
+  local s="$1" c cp
+  dw=0
+  while [ -n "$s" ]; do
+    c="${s:0:1}"; s="${s:1}"
+    printf -v cp '%d' "'$c"
+    dw=$((dw + 1))
+    if (( cp >= 0x1100 && cp <= 0x115F || cp >= 0x2E80 && cp <= 0x303E ||
+          cp >= 0x3041 && cp <= 0x33FF || cp >= 0x3400 && cp <= 0x4DBF ||
+          cp >= 0x4E00 && cp <= 0x9FFF || cp >= 0xA000 && cp <= 0xA4CF ||
+          cp >= 0xA960 && cp <= 0xA97F || cp >= 0xAC00 && cp <= 0xD7A3 ||
+          cp >= 0xF900 && cp <= 0xFAFF || cp >= 0xFE10 && cp <= 0xFE19 ||
+          cp >= 0xFE30 && cp <= 0xFE6F || cp >= 0xFF00 && cp <= 0xFF60 ||
+          cp >= 0xFFE0 && cp <= 0xFFE6 || cp >= 0x1F300 && cp <= 0x1F64F ||
+          cp >= 0x1F900 && cp <= 0x1F9FF || cp >= 0x20000 && cp <= 0x3FFFD )); then
+      dw=$((dw + 1))
+    fi
+  done
+}
+
 # ── Cells ────────────────────────────────────────────────────────────────────
 #
 # Every printable piece is a cell, held across parallel arrays: an id, the group
 # it belongs to, its coloured form, the plain form that gets measured, the
-# columns the plain form does not carry, and a role. Cells inside a group are
-# joined by a space, groups by a grey pipe, and the left half is padded away from
-# the right half.
+# columns it prints, and a role. Cells inside a group are joined by a space,
+# groups by a grey pipe, and the left half is padded away from the right half.
 #
 # The per-cell width is what makes overflow handling possible at all. A single
-# accumulated extra_cols cannot say how many columns come back when a segment is
+# accumulated width cannot say how many columns come back when a segment is
 # dropped, so the count has to live on the segment that owns it.
 n_cells=0
-cell_id=(); cell_g=(); cell_c=(); cell_p=(); cell_x=(); cell_r=(); cell_a=()
+cell_id=(); cell_g=(); cell_c=(); cell_p=(); cell_w=(); cell_r=(); cell_a=()
 
 # add_cell id group coloured plain extra_columns [role]
+#
+# extra_columns is whatever the plain copy does not carry: a glyph and the space
+# after it, which print but are not in the measured string, or BAR_CELLS for the
+# bar, which has no plain copy at all. Folding it in here means a cell's width is
+# stated once, where the cell is built.
 #
 # Role "div" marks a cell that exists only to separate two others. It is skipped
 # whenever it would land at either end of what survives in its group, which is
 # what keeps a dangling separator off the line.
 add_cell() {
   cell_id[$n_cells]="$1"; cell_g[$n_cells]="$2"; cell_c[$n_cells]="$3"
-  cell_p[$n_cells]="$4";  cell_x[$n_cells]="$5"; cell_r[$n_cells]="${6:-cell}"
+  cell_p[$n_cells]="$4";  cell_r[$n_cells]="${6:-cell}"
+  measure "$4"
+  cell_w[$n_cells]=$((dw + $5))
   cell_a[$n_cells]=1
   eval "idx_$1=$n_cells"   # index by name, so the ladder never has to search
   n_cells=$((n_cells + 1))
@@ -479,7 +536,7 @@ compose() {
       fi
       if [ -n "$gc" ]; then gc+=" "; gw=$((gw + 1)); fi
       gc+="${cell_c[$i]}"
-      gw=$((gw + ${#cell_p[$i]} + cell_x[i]))
+      gw=$((gw + cell_w[i]))
     done
     [ -n "$gc" ] || continue
     if [ "$g" = 4 ]; then
@@ -528,12 +585,16 @@ if [ "$budget" -gt 0 ]; then
         if [ -n "$base" ] && [ "$base" != "$short_cwd" ] && [ -n "${idx_cwd:-}" ]; then
           cell_c[$idx_cwd]="\033[${C_DIR}m${base}\033[0m"
           cell_p[$idx_cwd]="$base"
+          measure "$base"
+          cell_w[$idx_cwd]="$dw"
         fi
         ;;
       phase_short)
         if [ -n "${idx_phase:-}" ]; then
           cell_c[$idx_phase]="$phase_short_c"
           cell_p[$idx_phase]="$phase_num"
+          measure "$phase_num"
+          cell_w[$idx_phase]=$((dw + phase_extra))
         fi
         ;;
       cwd_drop)    drop_cell cwd ;;
@@ -544,7 +605,7 @@ if [ "$budget" -gt 0 ]; then
         if [ -n "${idx_bar:-}" ]; then
           cell_c[$idx_bar]="\033[38;5;${bar_color}m|\033[0m"
           cell_p[$idx_bar]="|"
-          cell_x[$idx_bar]=0
+          cell_w[$idx_bar]=1
           cell_r[$idx_bar]="div"
         fi
         ;;

@@ -28,7 +28,9 @@ The two on the phase are a later addition and do different work from the first t
 
 They are also plain Unicode rather than Nerd Font private use, unlike the first two. The branch and effort icons are decoration and degrade to a missing glyph box on an unpatched font; these two carry meaning, so they come from a range an ordinary monospace font already has. The first two require a Nerd Font. This machine runs MesloLGS NF in iTerm2, where every glyph is single width by design, which the width arithmetic depends on.
 
-All four stay out of the measured copy of their cell and are counted in that cell's own `extra_cols` instead, because each is one column but three bytes and `${#var}` only agrees with that under a UTF-8 locale.
+All four stay out of the measured copy of their cell and are counted in that cell's own `extra_columns` instead, because each is one column but three bytes and a character count only agrees with that under a UTF-8 locale.
+
+A cell's second number is its printed width, and for that a character count is not the same measurement either. East Asian text is where they diverge: a CJK ideograph, a kana or a fullwidth form is one character and two columns, so a plan titled in Chinese measured by `${#var}` under-counts its own cell, the budget then says the line fits when it does not, and the harness eats the usage percentage off the end. `measure()` walks the string by character, takes each codepoint from `printf`'s `"'c"` form (a builtin, so no process is spawned), and adds a second column for the East Asian Wide and Fullwidth ranges and the emoji planes. Private use is deliberately not among them, since the Nerd Font glyphs live there and print one column. The whole walk costs about 1ms on a render, which is the price of a title that can be in any language.
 
 ## Palette
 
@@ -112,6 +114,8 @@ Three things this ordering is built on:
 A separator only exists to divide two things, so it is skipped whenever it would land at either end of what survives in its group. That is what keeps a shed segment from leaving a dangling pipe behind, and it applies to the group pipes and to the degraded bar alike.
 
 Two constraints the rungs respect. Nothing spawns a process, since this runs at 1 Hz for the whole session: the whole ladder is bash arithmetic over the cell arrays, and it costs about 3ms against a 59ms render dominated by the `jq` and `git` calls. Nothing slices a string either, because `${str:0:n}` counts bytes and would split a glyph, so every rung either drops a cell outright or swaps it for a shorter whole token.
+
+A rung that rewrites a cell's text has to restate that cell's width, since the width is what the rung above is fitted against. The two that substitute a shorter whole token rather than dropping a cell (the last folder, the phase number) call `measure()` on the new text and put the result back, which is what keeps the widened case honest at the widths where they fire.
 
 One consequence worth knowing: the rung a line sits on can change without the terminal resizing, because the content moves too. A token count crossing from `9.9k` to `10.1k` is one column wider and can be enough to push a line onto the next rung.
 

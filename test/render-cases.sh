@@ -41,7 +41,21 @@ pass=0
 fail=0
 
 strip() { sed 's/\x1b\[[0-9;]*m//g'; }
-cols()  { python3 -c 'import sys;print(len(sys.stdin.read()))'; }
+
+# Printed columns, not characters. The script measures East Asian text as two
+# columns per character, so counting characters here would agree with a buggy
+# script and disagree with the terminal. The ranges are the ones in measure().
+cols() {
+  python3 -c '
+import sys
+WIDE = ((0x1100,0x115F),(0x2E80,0x303E),(0x3041,0x33FF),(0x3400,0x4DBF),
+        (0x4E00,0x9FFF),(0xA000,0xA4CF),(0xA960,0xA97F),(0xAC00,0xD7A3),
+        (0xF900,0xFAFF),(0xFE10,0xFE19),(0xFE30,0xFE6F),(0xFF00,0xFF60),
+        (0xFFE0,0xFFE6),(0x1F300,0x1F64F),(0x1F900,0x1F9FF),(0x20000,0x3FFFD))
+s = sys.stdin.read().rstrip("\n")
+print(sum(2 if any(a <= ord(c) <= b for a, b in WIDE) else 1 for c in s))
+'
+}
 
 export CLAUDE_STATUSLINE_NOW=1000
 export CLAUDE_STATUSLINE_STATE="$fixtures/flash-state"
@@ -110,7 +124,7 @@ case_render() {
   fi
 }
 
-# name, expected group (or empty), plan body, [clock], [flash length]
+# name, expected group (or empty), plan body, [clock], [flash length], [filename]
 #
 # Each case gets its own state file, so one case can never inherit another's
 # clock. Two renders run: the first establishes the clock at 1000 and its output
@@ -119,10 +133,10 @@ case_render() {
 # for a later one. Without the priming render every clock would read as age zero,
 # because a fresh state file is itself the reset.
 case_phase() {
-  local name="$1" want="$2" body="$3" now="${4:-1000}" flash="${5:-5}"
+  local name="$1" want="$2" body="$3" now="${4:-1000}" flash="${5:-5}" file="${6:-PLAN.md}"
   local dir="$fixtures/$name"
-  mkdir -p "$dir"
-  printf '%s' "$body" > "$dir/PLAN.md"
+  mkdir -p "$dir/$(dirname "$file")"
+  printf '%s' "$body" > "$dir/$file"
   local got payload
   payload="{\"cwd\":\"$dir\",\"session_id\":\"$name\",\"model\":{\"display_name\":\"M\"}}"
   FLASH_OVERRIDE="$flash" render_at 1000 "$dir/state" 200 "$payload" > /dev/null
@@ -192,6 +206,31 @@ payload_arrow='{"cwd":"'"$repo_arrow"'","session_id":"warrow","model":{"display_
 for width in 60 90 120 160 200 240; do
   case_render "check form $width"  "$width" "$payload_check"
   case_render "arrow form $width"  "$width" "$payload_arrow"
+done
+
+# ── Wide text ────────────────────────────────────────────────────────────────
+#
+# East Asian text is where a character count and a printed width disagree: the
+# title below is eight characters and sixteen columns. Measuring it with ${#s}
+# under-counts the left half by eight, the line runs eight columns long, and the
+# harness cuts it from the right, so what disappears is the usage percentage.
+#
+# Swept across every column from the natural width down to the floor rather than
+# pinned at one width, because the rungs that rewrite a cell's plain form (the
+# shortened directory, the shortened phase) have to restate its width or the line
+# goes long at whichever widths they fire.
+wide_dir="$fixtures/wide"
+mkdir -p "$wide_dir/docs"
+"$GIT_BIN" -C "$wide_dir" init -q -b main >/dev/null 2>&1
+printf -- '- [x] Phase 1: 脚手架\n- [/] Phase 2: 数据收集与入库\n- [ ] Phase 3: 发布\n' \
+  > "$wide_dir/docs/PLAN.md"
+payload_wide='{"cwd":"'"$wide_dir"'","session_id":"wide","model":{"display_name":"DeepSeek V4.1 Flash"},"effort":{"level":"xhigh"},"context_window":{"total_input_tokens":123200,"used_percentage":24}}'
+wide_floor=$(( 19 + 2 + 3 + margin ))   # model, two spaces, "24%", the margin
+
+[ "$check" -eq 0 ] && echo && echo "── wide text ──"
+wide_nat="$(printf '%s' "$payload_wide" | env -u COLUMNS bash "$script" | strip | cols)"
+for ((w = wide_nat + margin; w >= wide_floor; w--)); do
+  case_render "wide $w" "$w" "$payload_wide"
 done
 
 [ "$check" -eq 0 ] && echo && echo "── effort levels ──"
@@ -276,6 +315,10 @@ case_phase "no checkboxes"  "" '# just a document
 
 Nothing to parse here.
 '
+
+# The filename is matched case-insensitively, so the DMXL convention of a
+# lowercase docs/plan.md resolves just like an uppercase PLAN.md.
+case_phase "lowercase plan.md" "$ARROW 1/2: Scaffold" "$unstarted" 1000 5 "docs/plan.md"
 
 # ── The flash clock ─────────────────────────────────────────────────────────
 #
@@ -498,14 +541,20 @@ case_ladder() {
 import os, re, sys
 margin = int(os.environ["MARGIN"])
 ansi = re.compile(r"\x1b\[[0-9;]*m")
+WIDE = ((0x1100,0x115F),(0x2E80,0x303E),(0x3041,0x33FF),(0x3400,0x4DBF),
+        (0x4E00,0x9FFF),(0xA000,0xA4CF),(0xA960,0xA97F),(0xAC00,0xD7A3),
+        (0xF900,0xFAFF),(0xFE10,0xFE19),(0xFE30,0xFE6F),(0xFF00,0xFF60),
+        (0xFFE0,0xFFE6),(0x1F300,0x1F64F),(0x1F900,0x1F9FF),(0x20000,0x3FFFD))
+def cols(s):
+    return sum(2 if any(a <= ord(c) <= b for a, b in WIDE) else 1 for c in s)
 bad = 0
 with open(sys.argv[1], encoding="utf-8") as src, open(sys.argv[2], "w", encoding="utf-8") as dst:
     for line in src:
         w, _, rest = line.rstrip("\n").partition("\t")
         plain = ansi.sub("", rest)
         want = int(w) - margin
-        if len(plain) != want:
-            print("FAIL  ladder width %s: got %d cols, want %d" % (w, len(plain), want), file=sys.stderr)
+        if cols(plain) != want:
+            print("FAIL  ladder width %s: got %d cols, want %d" % (w, cols(plain), want), file=sys.stderr)
             print("      [%s]" % plain, file=sys.stderr)
             bad = 1
         dst.write("%s\t%s\n" % (w, plain))

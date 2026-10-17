@@ -94,7 +94,7 @@ The reading is kept in the same per-session state file as the acknowledgement cl
 
 ## The plan doc
 
-The phase group parses the first plan doc it finds, trying `$cwd/PLAN.md`, `$cwd/docs/PLAN.md`, then the same two at the repo root. Markers, all at column 0:
+The phase group parses the first plan doc it finds, trying `$cwd/PLAN.md`, `$cwd/docs/PLAN.md`, then the same two at the repo root. The filename is matched case-insensitively, so a lowercase `plan.md`, as the DMXL convention names it, resolves just like `PLAN.md`. Markers, all at column 0:
 
 | Marker | Meaning |
 |---|---|
@@ -153,6 +153,8 @@ The clock is `$EPOCHSECONDS`, which is bash 5. With no clock the group settles o
 ```
 
 The suite covers every optional field, all five effort levels, the usage thresholds, the no-git and no-plan paths, malformed stdin, and right-alignment under both a UTF-8 locale and `LC_ALL=C`. Both glyph forms of the phase group get their own width cases in both locales, since a glyph is one column and three bytes and a form that let one into its measured copy would run two columns long with nothing about the line looking wrong.
+
+A plan titled in Chinese gets a sweep of its own, from the natural width down to the floor. It is the case a character count gets wrong rather than a glyph: eight ideographs are eight characters and sixteen columns, and a script that measures them as eight runs the line eight columns long, whereupon the harness truncates the usage percentage. The suite counts printed columns throughout, not characters, so it agrees with the terminal rather than with a buggy script.
 
 The acknowledgement clock is asserted as a sequence rather than as single renders, because what the group shows depends on what it showed before. The sequence walks a plan through ticking a box, ticking another one part way through the five seconds, editing prose below the checklist, marking a phase `[/]`, unticking, a clock that moves backwards, a missing state file and a corrupt one. `CLAUDE_STATUSLINE_NOW` and `CLAUDE_STATUSLINE_STATE` are what make that deterministic; the whole suite runs on a frozen clock.
 
